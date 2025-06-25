@@ -7,6 +7,7 @@ import torch.distributed as dist
 import torch.nn as nn
 import transformers
 from transformers import AutoConfig, AutoModelForCausalLM
+import deepspeed
 
 from arealite.api.cli_args import (
     EngineConfig,
@@ -82,14 +83,39 @@ class HFEngine(SPMDWrapper):
         """Initialize model in single node."""
 
         # Load model
+        local_rank = int(os.getenv("LOCAL_RANK", "0"))
+        world_size = int(os.getenv("WORLD_SIZE", "1"))
+        assert self.args.n_nodes == 1, "Only single node training is supported."
         dtype = torch.bfloat16 if self.engine_config.bf16 else torch.float16
-        model = AutoModelForCausalLM.from_pretrained(
-            pretrained_model_name_or_path=self.engine_config.path,
-            torch_dtype=dtype,
-            attn_implementation="flash_attention_2",
-            trust_remote_code=True,
-            device_map="cuda:0",
-        )
+        if not torch.distributed.is_initialized() and world_size > 1:
+            deepspeed.init_distributed(dist_backend="nccl", world_size=world_size)
+        torch.cuda.set_device(local_rank)
+
+        if world_size == 1:
+            model = AutoModelForCausalLM.from_pretrained(
+                self.engine_config.path,
+                torch_dtype=dtype,
+                attn_implementation="flash_attention_2",
+                trust_remote_code=True,
+                device_map=f"cuda:{local_rank}",
+            )
+        else:
+            with deepspeed.zero.Init(dtype=dtype):
+                model = AutoModelForCausalLM.from_pretrained(
+                    self.engine_config.path,
+                    torch_dtype=dtype,
+                    attn_implementation="flash_attention_2",
+                    trust_remote_code=True
+                )
+            
+            model = deepspeed.initialize(
+                model,
+                mp_size=world_size,
+                dtype=dtype,
+                replace_with_kernel_inject=True
+            )
+
+
         self.model_config = AutoConfig.from_pretrained(
             pretrained_model_name_or_path=self.engine_config.path,
             trust_remote_code=True,
