@@ -1,0 +1,1 @@
+PYTHONPATH=. deepspeed --num_gpus 2 arealite/tests/test_hf_engine_autotp.py > output.log 2>&1

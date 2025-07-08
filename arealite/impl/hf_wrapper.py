@@ -91,35 +91,21 @@ class HFEngine(SPMDWrapper):
             deepspeed.init_distributed(dist_backend="nccl", world_size=world_size)
         torch.cuda.set_device(local_rank)
 
-        if world_size == 1:
-            model = AutoModelForCausalLM.from_pretrained(
-                self.engine_config.path,
-                torch_dtype=dtype,
-                attn_implementation="flash_attention_2",
-                trust_remote_code=True,
-                device_map=f"cuda:{local_rank}",
-            )
-        else:
-            with deepspeed.zero.Init(dtype=dtype):
-                model = AutoModelForCausalLM.from_pretrained(
-                    self.engine_config.path,
-                    torch_dtype=dtype,
-                    attn_implementation="flash_attention_2",
-                    trust_remote_code=True
-                )
-            
-            model = deepspeed.initialize(
-                model,
-                mp_size=world_size,
-                dtype=dtype,
-                replace_with_kernel_inject=True
-            )
-
+        model = AutoModelForCausalLM.from_pretrained(
+            self.engine_config.path,
+            torch_dtype=dtype,
+            attn_implementation="flash_attention_2",
+            trust_remote_code=True,
+            device_map=f"cuda:{local_rank}",
+        )
 
         self.model_config = AutoConfig.from_pretrained(
             pretrained_model_name_or_path=self.engine_config.path,
             trust_remote_code=True,
         )
+
+        if world_size > 1:
+            model = deepspeed.tp_model_init(model, tp_size=2, dtype=dtype)
 
         self.model = model
 
